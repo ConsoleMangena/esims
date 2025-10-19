@@ -8,11 +8,46 @@ This project is a prototype implementation of a decentralised Engineering Survey
 ## Features
 - **Hybrid Blockchain Architecture:** Combines a private Proof of Authority (PoA) blockchain for data confidentiality with a public blockchain for immutable transaction anchoring.
 - **Secure and Transparent Data Management:** Immutable recording of survey data transactions with cryptographic audit trails.
-- **Role-Based Access Control:** Supports multiple stakeholder roles including surveyors, project managers, and clients with fine-grained permissions.
-- **Smart Contract Automation:** Ensures data validity, automates approval workflows, and enforces business rules.
+- **Role-Based Access Control:** Supports multiple stakeholder roles including surveyors, project managers, clients, and administrators with fine-grained permissions.
+- **Smart Contract Automation:** Developed in **Solidity**, smart contracts ensure data validity, automate approval workflows, and enforce business rules on the blockchain.
 - **Off-Chain Storage Integration:** Utilizes IPFS for large file storage while ensuring data integrity through blockchain references.
 - **Optimal for Low-Bandwidth Conditions:** Designed for reliable operation under constrained network environments (1-5 Mbps).
-- **Web-Based Interface:** React.js frontend for easy access and interaction with survey data.
+- **Web-Based Interface:** Intuitive React.js frontend for easy access and interaction with survey data.
+
+---
+
+## User Roles and Dashboards
+
+### Surveyor
+- **Dashboard Overview:** Summary of submitted surveys, pending verifications, and notifications.
+- **Submit Survey Data:** Upload processed survey files with blockchain transaction submission.
+- **My Submissions:** Status tracking of submitted survey data.
+- **Transaction Details:** View blockchain transaction records.
+- **Profile Settings:** Update personal information and preferences.
+
+### Project Manager
+- **Dashboard Overview:** Project progress, pending verifications, and recent activity.
+- **Survey Data Verification:** Review and approve survey data submissions.
+- **Project Transactions Log:** Access detailed blockchain transactions per project.
+- **User Management:** Assign roles and manage project users.
+- **Reports & Analytics:** Generate reports and charts on project performance.
+- **Profile Settings:** Personal details and security settings.
+
+### Client/Stakeholder
+- **Dashboard Overview:** Project status, key milestones, and notifications.
+- **View Survey Results:** Download approved survey data and reports.
+- **Audit Trail:** Read-only access to blockchain transaction proofs.
+- **Project Timeline:** Visual timeline of project milestones.
+- **Profile Settings:** Manage personal preferences.
+
+### System Administrator
+- **Admin Dashboard Overview:** System health, alerts, and metrics.
+- **User Accounts Management:** Control user registration, roles, and permissions.
+- **Smart Contract Management:** Define and update Solidity blockchain automation rules.
+- **Blockchain Node Monitoring:** Real-time status of blockchain nodes.
+- **System Logs & Audit:** View activity and security logs.
+- **Settings & Configuration:** Manage system-wide settings and integrations.
+- **Profile Settings:** Administrator profile management.
 
 ---
 
@@ -21,6 +56,7 @@ This project is a prototype implementation of a decentralised Engineering Survey
 - Frontend: React.js
 - Private Blockchain: Proof of Authority (PoA) network
 - Public Blockchain: Ethereum testnet (for anchoring)
+- Smart Contracts: Developed in Solidity
 - Off-chain Storage: IPFS
 
 ---
@@ -72,5 +108,4 @@ This project is licensed under the MIT License.
 ---
 
 ## Contact
-For further information or questions, please contact Consolation Mangena at [consolationmangena@gmail.com]
----
+For further information or questions, please contact Consolation Mangena at [consolationmangena@gmail.com].
