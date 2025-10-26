@@ -11,7 +11,7 @@ export default function NotificationDropdown() {
   useEffect(() => {
     (async () => {
       try {
-        const unread = await listNotifications({ unread: true });
+        const unread = await listNotifications({ unread: true, silent: true });
         setNotifying((unread || []).length > 0);
       } catch {
         // ignore

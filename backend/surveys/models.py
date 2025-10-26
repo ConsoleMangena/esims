@@ -54,11 +54,19 @@ class Survey(models.Model):
     submitted_by = models.ForeignKey("auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="submitted_surveys")
     # Optional file upload and metadata
     file = models.FileField(upload_to="survey_uploads/%Y/%m/%d/", blank=True, null=True)
+    recovered_file = models.FileField(upload_to="survey_recovered/%Y/%m/%d/", blank=True, null=True)
     file_category = models.CharField(max_length=32, choices=FILE_CATEGORY_CHOICES, blank=True, null=True)
     file_mime_type = models.CharField(max_length=100, blank=True, null=True)
     file_ext = models.CharField(max_length=20, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # Encryption metadata for on-chain encrypted storage (envelope or KDF)
+    enc_scheme = models.CharField(max_length=32, default="envelope-aeskw-v1")
+    key_version = models.PositiveIntegerField(default=1)
+    wrapped_dek_b64 = models.TextField(blank=True, null=True)
+    kdf_salt_b64 = models.TextField(blank=True, null=True)
+    enc_chunk_size = models.IntegerField(blank=True, null=True)
 
     def __str__(self) -> str:
         return self.title

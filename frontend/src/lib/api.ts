@@ -1,5 +1,6 @@
 import axios, { AxiosError } from "axios";
 import { STORAGE_KEY } from "../context/AuthContext";
+import { decrementLoading, incrementLoading } from "./loadingBus";
 
 const baseURL = (import.meta as any)?.env?.VITE_API_BASE ||
   (typeof window !== "undefined" ? `${window.location.origin}/api/` : "/api/");
@@ -47,9 +48,14 @@ function setRefreshToken(newRefresh: string) {
 }
 
 api.interceptors.request.use((config) => {
+  const cfg: any = config;
+  const silent = !!cfg.silent;
+  if (!silent) {
+    try { incrementLoading(); } catch {}
+    cfg.__counted = true;
+  }
   const { accessToken } = getTokens();
   if (accessToken) {
-    const cfg: any = config;
     cfg.headers = cfg.headers || {};
     cfg.headers["Authorization"] = `Bearer ${accessToken}`;
   }
@@ -70,9 +76,14 @@ function flushQueue(error?: any) {
 }
 
 api.interceptors.response.use(
-  (r) => r,
+  (r) => {
+    const cfg: any = r.config || {};
+    if (cfg.__counted) { try { decrementLoading(); } catch {} }
+    return r;
+  },
   async (error: AxiosError) => {
     const original: any = error.config || {};
+    if ((original as any).__counted) { try { decrementLoading(); } catch {} }
     if (error.response?.status === 401 && !original._retry) {
       const { refreshToken } = getTokens();
       if (!refreshToken) return Promise.reject(error);
@@ -85,14 +96,15 @@ api.interceptors.response.use(
       isRefreshing = true;
       original._retry = true;
       try {
-        const resp = await api.post("auth/refresh", { refresh: refreshToken });
+        const resp = await api.post("auth/refresh", { refresh: refreshToken }, { silent: true } as any);
         const newAccess = resp.data?.access;
         const newRefresh = (resp.data as any)?.refresh;
         if (newAccess) setAccessToken(newAccess);
         if (newRefresh) setRefreshToken(newRefresh);
         isRefreshing = false;
         flushQueue();
-        return api(original);
+        const resp2 = await api({ ...original, silent: !!(original as any).silent } as any);
+        return resp2;
       } catch (e) {
         isRefreshing = false;
         flushQueue(e);

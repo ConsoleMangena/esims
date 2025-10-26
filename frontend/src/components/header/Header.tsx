@@ -3,6 +3,7 @@ import { ThemeToggleButton } from "../common/ThemeToggleButton";
 import NotificationDropdown from "./NotificationDropdown";
 import UserDropdown from "./UserDropdown";
 import { Link } from "react-router";
+import ConnectWalletButton from "./ConnectWalletButton";
 
 // Define the interface for the props
 interface HeaderProps {
@@ -158,7 +159,10 @@ const Header: React.FC<HeaderProps> = ({ onClick, onToggle }) => {
             {/* <!-- Notification Menu Area --> */}
           </div>
           {/* <!-- User Area --> */}
-          <UserDropdown />
+          <div className="flex items-center gap-3">
+            <ConnectWalletButton />
+            <UserDropdown />
+          </div>
         </div>
       </div>
     </header>

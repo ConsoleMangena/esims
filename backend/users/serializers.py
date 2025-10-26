@@ -13,7 +13,13 @@ class ProfileSerializer(serializers.ModelSerializer):
     user = serializers.PrimaryKeyRelatedField(read_only=True)
     username = serializers.CharField(source="user.username", read_only=True)
     email = serializers.EmailField(source="user.email", read_only=True)
+    first_name = serializers.CharField(source="user.first_name", required=False, allow_blank=True)
+    last_name = serializers.CharField(source="user.last_name", required=False, allow_blank=True)
     avatar = serializers.FileField(required=False, allow_null=True)
+    phone = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    job_title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    company = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    address = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     class Meta:
         model = Profile
@@ -22,12 +28,25 @@ class ProfileSerializer(serializers.ModelSerializer):
             "user",
             "username",
             "email",
+            "first_name",
+            "last_name",
             "avatar",
+            "phone",
+            "job_title",
+            "company",
+            "address",
             "role",
+            "data_kek_b64",
+            "data_kek_version",
             "created_at",
             "updated_at",
         ]
         read_only_fields = ["user", "created_at", "updated_at"]
+        extra_kwargs = {
+            # write-only: managers can set their KEK via profile update; do not expose in GET
+            "data_kek_b64": {"write_only": True, "required": False, "allow_null": True, "allow_blank": True},
+            "data_kek_version": {"required": False},
+        }
 
     MAX_AVATAR_MB = 5
     ALLOWED_IMAGE_CT = {"image/jpeg", "image/png", "image/webp"}
@@ -70,8 +89,28 @@ class ProfileSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         avatar = validated_data.pop("avatar", None)
-        # Update other fields first
+        user_data = validated_data.pop("user", {})
+        # Update profile fields first
         instance = super().update(instance, validated_data)
+        # Persist nested user fields
+        if user_data:
+            changed = False
+            first = user_data.get("first_name")
+            last = user_data.get("last_name")
+            if first is not None and first != instance.user.first_name:
+                instance.user.first_name = first
+                changed = True
+            if last is not None and last != instance.user.last_name:
+                instance.user.last_name = last
+                changed = True
+            if changed:
+                # Save only changed columns
+                update_fields = []
+                if first is not None:
+                    update_fields.append("first_name")
+                if last is not None:
+                    update_fields.append("last_name")
+                instance.user.save(update_fields=update_fields or None)
         if avatar is not None:
             compressed = self._compress_avatar(avatar, instance.user_id)
             # Save replaces old file

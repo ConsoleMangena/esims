@@ -38,6 +38,16 @@ class ProfileViewSet(viewsets.ModelViewSet):
                 )
                 if not can_change:
                     return Response({"detail": "Not authorized to change role"}, status=403)
+            # Only managers/admins can set KEK fields
+            if ("data_kek_b64" in data) or ("data_kek_version" in data):
+                can_set_kek = (
+                    request.user.is_staff
+                    or request.user.is_superuser
+                    or getattr(getattr(request.user, "profile", None), "role", None)
+                    in ("admin", "manager")
+                )
+                if not can_set_kek:
+                    return Response({"detail": "Not authorized to set manager key"}, status=403)
             serializer = self.get_serializer(profile, data=request.data, partial=True)
             serializer.is_valid(raise_exception=True)
             serializer.save()

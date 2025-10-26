@@ -5,6 +5,7 @@ import NotFound from "./pages/OtherPage/NotFound";
 import AppLayout from "./layout/AppLayout";
 import { ScrollToTop } from "./components/common/ScrollToTop";
 import Blank from "./pages/Blank";
+import LoadingOverlay from "./components/common/LoadingOverlay";
 
 import RequireRole from "./components/auth/RequireRole";
 import RoleRedirect from "./components/auth/RoleRedirect";
@@ -21,6 +22,8 @@ import VerifySubmissions from "./pages/Manager/VerifySubmissions";
 import ProjectTransactions from "./pages/Manager/ProjectTransactions";
 import UserManagement from "./pages/Manager/UserManagement";
 import ReportsAnalytics from "./pages/Manager/ReportsAnalytics";
+import ManagerProjects from "./pages/Manager/Projects";
+import AnchoringHelp from "./pages/Manager/AnchoringHelp";
 
 // Client
 import ClientDashboard from "./pages/Client/Dashboard";
@@ -45,6 +48,7 @@ export default function App() {
     <>
       <Router>
         <ScrollToTop />
+        <LoadingOverlay />
         <Routes>
           {/* App Layout */}
           <Route element={<AppLayout />}>
@@ -103,10 +107,26 @@ export default function App() {
               }
             />
             <Route
+              path="/manager/projects"
+              element={
+                <RequireRole roles={["manager"]}>
+                  <ManagerProjects />
+                </RequireRole>
+              }
+            />
+            <Route
               path="/manager/verification"
               element={
                 <RequireRole roles={["manager"]}>
                   <VerifySubmissions />
+                </RequireRole>
+              }
+            />
+            <Route
+              path="/manager/help"
+              element={
+                <RequireRole roles={["manager"]}>
+                  <AnchoringHelp />
                 </RequireRole>
               }
             />

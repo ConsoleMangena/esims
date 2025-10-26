@@ -9,10 +9,11 @@ export interface Notification {
   created_at: string;
 }
 
-export async function listNotifications(params?: { unread?: boolean }) {
+export async function listNotifications(params?: { unread?: boolean; silent?: boolean }) {
   const { data } = await api.get<Notification[]>("notifications/", {
     params: params?.unread ? { unread: true } : undefined,
-  });
+    silent: params?.silent ?? false,
+  } as any);
   return data as any;
 }
 

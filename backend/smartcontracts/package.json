@@ -1,0 +1,25 @@
+{
+  "name": "smartcontracts",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "main": "hardhat.config.js",
+  "scripts": {
+    "compile": "hardhat compile",
+    "node": "hardhat node",
+    "deploy:localhost": "hardhat run --network localhost scripts/deploy.js",
+    "deploy:hardhat": "hardhat run scripts/deploy.js",
+    "export:abi": "hardhat run scripts/export-abi.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^6.1.0",
+    "hardhat": "^2.26.3"
+  }
+}

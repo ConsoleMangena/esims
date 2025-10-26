@@ -14,7 +14,7 @@ export default function UserDropdown() {
 
   async function fetchProfile() {
     try {
-      const { data } = await api.get("users/profiles/me/");
+      const { data } = await api.get("users/profiles/me/", { silent: true } as any);
       const name = data?.username || "User";
       let avatar: string | null = data?.avatar || null;
       if (avatar) {
@@ -80,7 +80,7 @@ export default function UserDropdown() {
         className="flex items-center text-gray-700 dropdown-toggle dark:text-gray-400"
       >
         <span className="mr-3 overflow-hidden rounded-full h-11 w-11">
-          <img src={avatarUrl || "/images/user/owner.jpg"} alt={username || "User"} />
+          <img src={avatarUrl || "/images/user/default-avatar.svg"} alt={username || "User"} className="h-11 w-11 object-cover" />
         </span>
 
         <span className="block mr-1 font-medium text-theme-sm">{username || "User"}</span>

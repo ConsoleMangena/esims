@@ -15,6 +15,7 @@ class SurveySerializer(serializers.ModelSerializer):
             "status",
             "submitted_by",
             "file",
+            "recovered_file",
             "file_category",
             "file_mime_type",
             "file_ext",
@@ -24,11 +25,18 @@ class SurveySerializer(serializers.ModelSerializer):
         read_only_fields = [
             "status",
             "submitted_by",
+            "recovered_file",
             "file_mime_type",
             "file_ext",
             "created_at",
             "updated_at",
         ]
+        extra_kwargs = {
+            # Backend will compute from the uploaded file when provided
+            "checksum_sha256": {"required": False},
+            # Backend will attempt to upload to IPFS and fill this
+            "ipfs_cid": {"required": False},
+        }
 
     def validate(self, attrs):
         file = attrs.get("file")

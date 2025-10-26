@@ -39,7 +39,9 @@ const navItems: NavItem[] = [
     name: "Project Manager",
     subItems: [
       { name: "Dashboard", path: "/manager" },
+      { name: "Projects", path: "/manager/projects" },
       { name: "Verification", path: "/manager/verification" },
+      { name: "Help: Anchoring & Recovery", path: "/manager/help" },
       { name: "Transactions Log", path: "/manager/transactions" },
       { name: "User Management", path: "/manager/users" },
       { name: "Reports & Analytics", path: "/manager/reports" },
