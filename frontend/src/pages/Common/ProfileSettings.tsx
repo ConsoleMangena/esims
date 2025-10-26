@@ -1,0 +1,190 @@
+import PageBreadcrumb from "../../components/common/PageBreadCrumb";
+import PageMeta from "../../components/common/PageMeta";
+import { useEffect, useMemo, useState } from "react";
+import Label from "../../components/form/Label";
+import Input from "../../components/form/input/InputField";
+import Select from "../../components/form/Select";
+import { useAuth } from "../../context/AuthContext";
+import { useNavigate } from "react-router";
+import api from "../../lib/api";
+
+export default function ProfileSettings() {
+  const navigate = useNavigate();
+  const { role: myRole, refreshToken, logout, setRole } = useAuth();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [profileId, setProfileId] = useState<number | null>(null);
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [role, setRoleLocal] = useState<string>("");
+  const [saved, setSaved] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState<string>("");
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+
+  const canChangeRole = useMemo(
+    () => myRole === "admin" || myRole === "manager",
+    [myRole]
+  );
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await api.get("users/profiles/me/");
+        setProfileId(data?.id ?? null);
+        setUsername(data?.username ?? "");
+        setEmail(data?.email ?? "");
+        setRoleLocal(data?.role ?? "");
+        let avatar: string | null = data?.avatar || null;
+        if (avatar) {
+          if (avatar.startsWith("http")) {
+            // absolute
+          } else if (avatar.startsWith("/")) {
+            avatar = `${window.location.origin}${avatar}`;
+          } else {
+            avatar = `${window.location.origin}/${avatar}`;
+          }
+          setAvatarUrl(avatar);
+        } else {
+          setAvatarUrl("");
+        }
+      } catch (e: any) {
+        setError("Failed to load profile");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  async function onSave(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSaved(false);
+    if (!profileId) return;
+    setSaving(true);
+    try {
+      const roleChanged = canChangeRole && !!role;
+      if (avatarFile) {
+        const fd = new FormData();
+        fd.append("avatar", avatarFile);
+        if (roleChanged) fd.append("role", role);
+        const { data } = await api.patch("users/profiles/me/", fd, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        if (data?.role) setRole(data.role);
+        setSaved(true);
+      } else if (roleChanged) {
+        const { data } = await api.patch("users/profiles/me/", { role });
+        if (data?.role) setRole(data.role);
+        setSaved(true);
+      } else {
+        setSaved(true);
+      }
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Failed to save profile");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function onAvatarChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0] || null;
+    setAvatarFile(f);
+    if (f) {
+      const url = URL.createObjectURL(f);
+      setAvatarUrl(url);
+    }
+  }
+
+  async function onLogout() {
+    try {
+      if (refreshToken) await api.post("auth/logout", { refresh: refreshToken });
+    } catch {
+      // ignore blacklist errors
+    } finally {
+      logout();
+      navigate("/login", { replace: true });
+    }
+  }
+
+  return (
+    <>
+      <PageMeta
+        title="ESIMS - Profile Settings"
+        description="Manage personal information and role."
+      />
+      <PageBreadcrumb pageTitle="Profile Settings" />
+      <div className="rounded-2xl border border-gray-200 bg-white px-5 py-7 dark:border-gray-800 dark:bg-white/[0.03]">
+        {loading ? (
+          <p className="text-gray-500">Loading…</p>
+        ) : (
+          <form onSubmit={onSave} className="max-w-2xl space-y-6">
+            <div className="flex items-center gap-4">
+              <div className="h-16 w-16 rounded-full overflow-hidden bg-gray-100 dark:bg-white/5">
+                <img src={avatarUrl || "/images/user/owner.jpg"} alt="Avatar" className="h-full w-full object-cover" />
+              </div>
+              <div className="flex-1">
+                <Label>Profile Image</Label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={onAvatarChange}
+                  className="block w-full text-sm text-gray-700 file:mr-3 file:rounded-lg file:border-0 file:bg-gray-100 file:px-4 file:py-2.5 file:text-sm file:font-medium file:text-gray-700 hover:file:bg-gray-200 dark:text-gray-300 dark:file:bg-white/5 dark:file:text-white/90"
+                />
+                <p className="mt-1.5 text-xs text-gray-500">PNG/JPG up to ~5MB.</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+              <div>
+                <Label>Username</Label>
+                <Input value={username} disabled hint="Read-only" />
+              </div>
+              <div>
+                <Label>Email</Label>
+                <Input value={email} disabled hint="Read-only" />
+              </div>
+            </div>
+            <div className="sm:max-w-xs">
+              <Label>Role</Label>
+              <Select
+                options={[
+                  { value: "surveyor", label: "Surveyor" },
+                  { value: "manager", label: "Manager" },
+                  { value: "client", label: "Client" },
+                  { value: "admin", label: "Admin" },
+                ]}
+                placeholder="Select role"
+                onChange={setRoleLocal}
+                value={role}
+                className={canChangeRole ? "" : "opacity-60 cursor-not-allowed"}
+              />
+              {!canChangeRole && (
+                <p className="mt-2 text-xs text-gray-500">
+                  Only managers and admins can change roles.
+                </p>
+              )}
+            </div>
+            {error && <p className="text-sm text-error-500">{error}</p>}
+            {saved && <p className="text-sm text-success-500">Saved.</p>}
+            <div className="flex gap-3">
+              <button
+                type="submit"
+                disabled={saving || (!canChangeRole && !avatarFile)}
+                className="px-4 py-2 rounded-lg bg-brand-500 text-white text-sm hover:bg-brand-600 disabled:opacity-50"
+              >
+                {saving ? "Saving…" : "Save changes"}
+              </button>
+              <button
+                type="button"
+                onClick={onLogout}
+                className="px-4 py-2 rounded-lg bg-gray-100 text-gray-800 text-sm hover:bg-gray-200 dark:bg-white/5 dark:text-white/90"
+              >
+                Log out
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </>
+  );
+}
