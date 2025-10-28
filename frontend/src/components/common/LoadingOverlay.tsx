@@ -8,8 +8,6 @@ const minVisibleMs = 300;
 
 export default function LoadingOverlay() {
   const { accessToken } = useAuth();
-  // Do not show the overlay after sign-in
-  if (accessToken) return null;
   const [count, setCount] = useState<number>(getLoadingCount());
   const [visible, setVisible] = useState(false);
   const delayTimer = useRef<number | null>(null);
@@ -45,6 +43,8 @@ export default function LoadingOverlay() {
     }
   }, [count, visible]);
 
+  // Hide overlay entirely for signed-in users
+  if (accessToken) return null;
   if (!visible) return null;
 
   return (

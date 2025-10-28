@@ -5,6 +5,8 @@ from rest_framework.validators import UniqueValidator
 from PIL import Image
 from io import BytesIO
 from django.core.files.base import ContentFile
+from django.contrib.auth.password_validation import validate_password
+from django.core import exceptions as dj_exceptions
 
 User = get_user_model()
 
@@ -36,17 +38,10 @@ class ProfileSerializer(serializers.ModelSerializer):
             "company",
             "address",
             "role",
-            "data_kek_b64",
-            "data_kek_version",
             "created_at",
             "updated_at",
         ]
         read_only_fields = ["user", "created_at", "updated_at"]
-        extra_kwargs = {
-            # write-only: managers can set their KEK via profile update; do not expose in GET
-            "data_kek_b64": {"write_only": True, "required": False, "allow_null": True, "allow_blank": True},
-            "data_kek_version": {"required": False},
-        }
 
     MAX_AVATAR_MB = 5
     ALLOWED_IMAGE_CT = {"image/jpeg", "image/png", "image/webp"}
@@ -123,9 +118,44 @@ class RegisterSerializer(serializers.Serializer):
         max_length=150,
         validators=[UniqueValidator(queryset=User.objects.all())],
     )
-    email = serializers.EmailField(required=False, allow_blank=True, allow_null=True)
-    password = serializers.CharField(write_only=True, min_length=8)
+    email = serializers.EmailField(
+        required=True,
+        allow_blank=False,
+        validators=[
+            UniqueValidator(
+                queryset=User.objects.all(),
+                lookup="iexact",
+                message="An account with this email already exists.",
+            )
+        ],
+    )
+    password = serializers.CharField(write_only=True)
     role = serializers.ChoiceField(choices=Profile.ROLE_CHOICES, required=False)
+
+    def validate_email(self, value: str):
+        v = (value or "").strip()
+        if not v:
+            raise serializers.ValidationError("Email is required")
+        # Extra safety – case-insensitive uniqueness
+        try:
+            if User.objects.filter(email__iexact=v).exists():
+                raise serializers.ValidationError("An account with this email already exists.")
+        except Exception:
+            # If DB check fails, fall back to value
+            pass
+        return v
+
+    def validate(self, attrs):
+        # Enforce server-side strong password policy using Django validators
+        username = attrs.get('username')
+        email = attrs.get('email')
+        raw_password = attrs.get('password')
+        dummy_user = User(username=username, email=email)
+        try:
+            validate_password(raw_password, user=dummy_user)
+        except dj_exceptions.ValidationError as e:
+            raise serializers.ValidationError({'password': list(e.messages)})
+        return attrs
 
     def create(self, validated_data):
         username = validated_data["username"]

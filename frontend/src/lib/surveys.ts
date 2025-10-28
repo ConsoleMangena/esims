@@ -16,6 +16,8 @@ export interface Survey {
   file_category?: string | null;
   file_mime_type?: string | null;
   file_ext?: string | null;
+  has_onchain_record?: boolean;
+  has_onchain_file?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -80,6 +82,13 @@ export async function rejectSurvey(id: number, opts?: { skipChain?: boolean; sil
   return data as any;
 }
 
+export async function recordOnChain(id: number, opts?: { silent?: boolean }): Promise<{ transactions: string[] }> {
+  const { data } = await api.post(`surveys/${id}/record-chain/`, null, {
+    silent: opts?.silent ?? false,
+  } as any);
+  return data as any;
+}
+
 export async function anchorFullFile(id: number, opts?: { silent?: boolean }): Promise<{ anchored_chunks: number; transactions: string[]; }> {
   const { data } = await api.post(`surveys/${id}/anchor-file/`, null, {
     silent: opts?.silent ?? false,
@@ -87,8 +96,8 @@ export async function anchorFullFile(id: number, opts?: { silent?: boolean }): P
   return data as any;
 }
 
-export async function recoverFullFile(id: number, body?: { data_kek_b64?: string; data_kek_version?: number }, opts?: { silent?: boolean }): Promise<{ recovered_bytes: number; stored: boolean; }> {
-  const { data } = await api.post(`surveys/${id}/recover-file/`, body || null, {
+export async function recoverFullFile(id: number, opts?: { silent?: boolean }): Promise<{ recovered_bytes: number; stored: boolean; download_url?: string; }> {
+  const { data } = await api.post(`surveys/${id}/recover-file/`, null, {
     silent: opts?.silent ?? false,
   } as any);
   return data as any;

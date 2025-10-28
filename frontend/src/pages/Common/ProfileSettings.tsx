@@ -26,9 +26,6 @@ export default function ProfileSettings() {
   const [jobTitle, setJobTitle] = useState("");
   const [company, setCompany] = useState("");
   const [address, setAddress] = useState("");
-  // Manager recovery key settings
-  const [managerKekB64, setManagerKekB64] = useState<string>("");
-  const [managerKekVersion, setManagerKekVersion] = useState<number>(1);
 
   // Role is display-only in Profile Settings
 
@@ -46,7 +43,6 @@ export default function ProfileSettings() {
         setJobTitle(data?.job_title ?? "");
         setCompany(data?.company ?? "");
         setAddress(data?.address ?? "");
-        setManagerKekVersion(data?.data_kek_version ?? 1);
         let avatar: string | null = data?.avatar || null;
         if (avatar) {
           if (avatar.startsWith("http")) {
@@ -84,10 +80,6 @@ export default function ProfileSettings() {
         fd.append("job_title", jobTitle);
         fd.append("company", company);
         fd.append("address", address);
-        if (role === "manager" || role === "admin") {
-          if (managerKekB64) fd.append("data_kek_b64", managerKekB64);
-          fd.append("data_kek_version", String(managerKekVersion || 1));
-        }
         const { data } = await api.patch("users/profiles/me/", fd, {
           headers: { "Content-Type": "multipart/form-data" },
         });
@@ -102,10 +94,6 @@ export default function ProfileSettings() {
           company,
           address,
         };
-        if (role === "manager" || role === "admin") {
-          if (managerKekB64) payload.data_kek_b64 = managerKekB64;
-          payload.data_kek_version = managerKekVersion || 1;
-        }
         const { data } = await api.patch("users/profiles/me/", payload);
         if (data?.role) setRole(data.role);
         setSaved(true);
@@ -177,19 +165,19 @@ export default function ProfileSettings() {
                 </div>
                 <div>
                   <Label>Phone</Label>
-                  <Input value={phone} onChange={(e)=>setPhone(e.target.value)} placeholder="e.g. +1 555 123 4567" />
+                  <Input value={phone} onChange={(e)=>setPhone(e.target.value)} placeholder="e.g. +263 77 123 4567" />
                 </div>
                 <div>
                   <Label>Job title</Label>
-                  <Input value={jobTitle} onChange={(e)=>setJobTitle(e.target.value)} placeholder="e.g. Site Engineer" />
+                  <Input value={jobTitle} onChange={(e)=>setJobTitle(e.target.value)} placeholder="e.g. Land Surveyor" />
                 </div>
                 <div>
                   <Label>Company</Label>
-                  <Input value={company} onChange={(e)=>setCompany(e.target.value)} placeholder="e.g. Acme Construction" />
+                  <Input value={company} onChange={(e)=>setCompany(e.target.value)} placeholder="e.g. Harare City Council" />
                 </div>
                 <div className="sm:col-span-2">
                   <Label>Address</Label>
-                  <Input value={address} onChange={(e)=>setAddress(e.target.value)} placeholder="Street, City, Country" />
+                  <Input value={address} onChange={(e)=>setAddress(e.target.value)} placeholder="Street, City, Zimbabwe" />
                 </div>
               </div>
             </div>
@@ -207,22 +195,6 @@ export default function ProfileSettings() {
               <Label>Role</Label>
               <Input value={role} disabled hint="Read-only" />
             </div>
-            {(role === "manager" || role === "admin") && (
-              <div>
-                <Label>Manager Recovery Key</Label>
-                <p className="mt-1 text-xs text-gray-500">Enter your base64 master key (KEK) and version for on-chain recovery. Key is stored on your profile and never displayed back.</p>
-                <div className="mt-3 grid grid-cols-1 gap-5 sm:grid-cols-2">
-                  <div className="sm:col-span-2">
-                    <Label>Master Key (base64)</Label>
-                    <Input value={managerKekB64} onChange={(e)=>setManagerKekB64(e.target.value)} placeholder="BASE64_OF_YOUR_KEK_BYTES" />
-                  </div>
-                  <div className="sm:max-w-xs">
-                    <Label>Key Version</Label>
-                    <Input value={String(managerKekVersion)} onChange={(e)=>setManagerKekVersion(parseInt(e.target.value||"1",10)||1)} />
-                  </div>
-                </div>
-              </div>
-            )}
             {error && <p className="text-sm text-error-500">{error}</p>}
             {saved && <p className="text-sm text-success-500">Saved.</p>}
             <div className="flex gap-3">

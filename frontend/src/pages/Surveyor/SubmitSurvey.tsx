@@ -6,8 +6,7 @@ import Input from "../../components/form/input/InputField";
 import Select from "../../components/form/Select";
 import { listProjects, type Project } from "../../lib/projects";
 import { createSurvey } from "../../lib/surveys";
-import { listTransactions, createTransaction } from "../../lib/transactions";
-import { recordSubmissionMM, addFileHashMM, getEtherscanTxUrl } from "../../lib/eth";
+import { listTransactions } from "../../lib/transactions";
 
 export default function SubmitSurvey() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -18,7 +17,6 @@ export default function SubmitSurvey() {
   const [checksum, setChecksum] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [extraFiles, setExtraFiles] = useState<File[]>([]);
-  const [extraChecksums, setExtraChecksums] = useState<string[]>([]);
   const [category, setCategory] = useState<string>("");
   const [detectedMime, setDetectedMime] = useState<string>("");
   const [detectedExt, setDetectedExt] = useState<string>("");
@@ -27,7 +25,6 @@ export default function SubmitSurvey() {
   const [done, setDone] = useState(false);
   const [txUrl, setTxUrl] = useState<string>("");
   const [txHash, setTxHash] = useState<string>("");
-  const [useMM, setUseMM] = useState<boolean>(false);
 
   useEffect(() => {
     (async () => {
@@ -63,30 +60,13 @@ export default function SubmitSurvey() {
         file: file || undefined,
         extra_files: extraFiles || undefined,
         file_category: category || undefined,
-      }, { skipChain: useMM, silent: true });
-      if (useMM) {
-        try {
-          const { hash } = await recordSubmissionMM(created.id, created.project, created.ipfs_cid, checksum);
-          setTxHash(hash);
-          setTxUrl(getEtherscanTxUrl(hash));
-          try { await createTransaction({ survey: created.id, public_anchor_tx_hash: hash, private_tx_hash: hash }); } catch {}
-          // Attach extra file hashes on-chain
-          for (const hx of extraChecksums) {
-            try {
-              await addFileHashMM(created.id, hx);
-            } catch {}
-          }
-        } catch (e: any) {
-          setError(e?.message || "MetaMask transaction failed");
-        }
-      } else {
-        try {
-          const txs = await listTransactions({ survey: created.id, silent: true });
-          const latest = (txs || [])[0];
-          setTxUrl(latest?.etherscan_url || "");
-          setTxHash(latest?.public_anchor_tx_hash || latest?.private_tx_hash || "");
-        } catch {}
-      }
+      }, { silent: true });
+      try {
+        const txs = await listTransactions({ survey: created.id, silent: true });
+        const latest = (txs || [])[0];
+        setTxUrl(latest?.etherscan_url || "");
+        setTxHash(latest?.public_anchor_tx_hash || latest?.private_tx_hash || "");
+      } catch {}
       setDone(true);
       setTitle("");
       setDescription("");
@@ -177,23 +157,12 @@ export default function SubmitSurvey() {
         // leave checksum as-is if hashing fails
       }
       // Compute extra file hashes
-      const extras: string[] = [];
-      for (const ef of files.slice(1)) {
-        try {
-          const b = await ef.arrayBuffer();
-          const d = await crypto.subtle.digest("SHA-256", b);
-          const hx = Array.from(new Uint8Array(d)).map((x)=>x.toString(16).padStart(2,"0")).join("");
-          extras.push(hx);
-        } catch {}
-      }
-      setExtraChecksums(extras);
     } else {
       setDetectedMime("");
       setDetectedExt("");
       setCategory("");
       setChecksum("");
       setExtraFiles([]);
-      setExtraChecksums([]);
     }
   }
 
@@ -265,12 +234,6 @@ export default function SubmitSurvey() {
               )}
             </div>
           )}
-          <div className="mt-2">
-            <label className="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-              <input type="checkbox" checked={useMM} onChange={(e)=>setUseMM(e.target.checked)} className="h-4 w-4 rounded border-gray-300 dark:border-gray-700" />
-              Use MetaMask for on-chain record
-            </label>
-          </div>
           <div>
             <button disabled={loading} type="submit" className="px-4 py-2 rounded-lg bg-brand-500 text-white text-sm hover:bg-brand-600 disabled:opacity-50">
               {loading ? "Submitting..." : "Submit"}

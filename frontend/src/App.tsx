@@ -24,6 +24,7 @@ import UserManagement from "./pages/Manager/UserManagement";
 import ReportsAnalytics from "./pages/Manager/ReportsAnalytics";
 import ManagerProjects from "./pages/Manager/Projects";
 import AnchoringHelp from "./pages/Manager/AnchoringHelp";
+import VerifyOriginal from "./pages/Manager/VerifyOriginal";
 
 // Client
 import ClientDashboard from "./pages/Client/Dashboard";
@@ -135,6 +136,14 @@ export default function App() {
               element={
                 <RequireRole roles={["manager"]}>
                   <ProjectTransactions />
+                </RequireRole>
+              }
+            />
+            <Route
+              path="/manager/verify-file"
+              element={
+                <RequireRole roles={["manager"]}>
+                  <VerifyOriginal />
                 </RequireRole>
               }
             />

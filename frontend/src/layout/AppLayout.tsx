@@ -3,9 +3,14 @@ import { Outlet } from "react-router";
 import AppHeader from "./AppHeader";
 import Backdrop from "./Backdrop";
 import AppSidebar from "./AppSidebar";
+import { ToastProvider } from "../context/ToastContext";
+import Toaster from "../components/ui/toast/Toaster";
+import { useNotificationToasts } from "../hooks/useNotifications";
 
 const LayoutContent: React.FC = () => {
   const { isExpanded, isHovered, isMobileOpen } = useSidebar();
+  // Start toast polling
+  useNotificationToasts(30000);
 
   return (
     <div className="min-h-screen xl:flex">
@@ -23,6 +28,7 @@ const LayoutContent: React.FC = () => {
           <Outlet />
         </div>
       </div>
+      <Toaster />
     </div>
   );
 };
@@ -30,7 +36,9 @@ const LayoutContent: React.FC = () => {
 const AppLayout: React.FC = () => {
   return (
     <SidebarProvider>
-      <LayoutContent />
+      <ToastProvider>
+        <LayoutContent />
+      </ToastProvider>
     </SidebarProvider>
   );
 };

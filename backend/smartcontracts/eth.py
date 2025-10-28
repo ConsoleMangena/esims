@@ -102,7 +102,20 @@ def _build_and_send_tx(fn_name: str, *args) -> Tuple[str, Optional[int]]:
     try:
         gas_estimate = fn.estimate_gas({"from": from_addr})
     except Exception:
-        gas_estimate = 250000
+        # Conservative fallback; we'll still cap by block gas limit below
+        gas_estimate = 10_000_000
+
+    # Determine safe gas limit under current block gas cap
+    try:
+        latest_blk = w3.eth.get_block("latest")
+        blk_limit = int(getattr(latest_blk, "gasLimit", getattr(latest_blk, "gas_limit", 30_000_000)) or 30_000_000)
+    except Exception:
+        blk_limit = 30_000_000
+    # Leave headroom (5%) to avoid exceeding block limit after intrinsic gas, etc.
+    safe_cap = max(21_000, int(blk_limit * 0.95))
+    gas_limit = int(gas_estimate * 1.1)
+    if gas_limit > safe_cap:
+        gas_limit = safe_cap
 
     # EIP-1559 params
     try:
@@ -170,13 +183,70 @@ def add_file_chunks(survey_id: int, chunks: list[bytes]) -> Tuple[str, Optional[
     return _build_and_send_tx("addFileChunks", int(survey_id), chunks)
 
 
+def get_file_chunk_count(survey_id: int) -> int:
+    contract = _get_contract()
+    if not contract:
+        raise RuntimeError("Ethereum not configured (missing contract)")
+    try:
+        return int(contract.functions.getFileChunkCount(int(survey_id)).call())
+    except Exception as e:
+        raise RuntimeError(f"read getFileChunkCount failed: {e}")
+
+
+def read_file_chunk(survey_id: int, index: int) -> bytes:
+    contract = _get_contract()
+    if not contract:
+        raise RuntimeError("Ethereum not configured (missing contract)")
+    try:
+        data = contract.functions.getFileChunk(int(survey_id), int(index)).call()
+        if isinstance(data, (bytes, bytearray)):
+            return bytes(data)
+        try:
+            return Web3.to_bytes(data)
+        except Exception:
+            try:
+                return bytes.fromhex(str(data).removeprefix("0x"))
+            except Exception:
+                return data
+    except Exception as e:
+        raise RuntimeError(f"read getFileChunk failed: {e}")
+
+
 def add_encrypted_chunks(survey_id: int, payloads: list[bytes]) -> Tuple[str, Optional[int]]:
     """Store encrypted file payloads (nonce||ciphertext_with_tag) via SSTORE2 pointers (bytes[])."""
     return _build_and_send_tx("addEncryptedChunks", int(survey_id), payloads)
 
 
+
+def get_onchain_record(survey_id: int) -> Optional[Dict[str, Any]]:
+    """Return the public mapping 'surveys[surveyId]' as a dict: projectId, ipfsCid, checksum, status, submitter."""
+    contract = _get_contract()
+    if not contract:
+        return None
+    try:
+        r = contract.functions.surveys(int(survey_id)).call()
+        # r is a tuple per struct order
+        if isinstance(r, (list, tuple)) and len(r) >= 5:
+            return {
+                "projectId": r[0],
+                "ipfsCid": r[1],
+                "checksum": r[2],
+                "status": r[3],
+                "submitter": r[4],
+            }
+        # Fallback: try attribute-style
+        return {
+            "projectId": getattr(r, "projectId", None),
+            "ipfsCid": getattr(r, "ipfsCid", None),
+            "checksum": getattr(r, "checksum", None),
+            "status": getattr(r, "status", None),
+            "submitter": getattr(r, "submitter", None),
+        }
+    except Exception:
+        return None
+
+
 def get_tx_receipt(tx_hash: str) -> Optional[Dict[str, Any]]:
-    w3 = get_web3()
     if not w3:
         return None
     try:

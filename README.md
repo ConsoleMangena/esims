@@ -1,94 +1,88 @@
-# ESIMS: End‑to‑end survey data anchoring with optional encrypted on‑chain storage
+# ESIMS: Survey data anchoring on a private Ethereum chain (raw chunks + on-chain headers)
 
-This repo contains a working stack for survey data collection and blockchain anchoring:
+This repo contains a full stack for survey data collection and blockchain anchoring on a private chain:
 - Backend: Django REST API (surveys, transactions, users) with Web3 integration
-- Smart contracts: Hardhat project (`SurveyRegistry`) for integrity anchoring and encrypted on‑chain storage
-- Frontend: React (Vite) dashboards for Surveyors, Managers, Clients
+- Smart contracts: Hardhat project (`SurveyRegistry`) for integrity anchoring and raw chunk storage
+- Frontend: React (Vite) dashboards for Surveyors, Managers, Clients, Admins
 
 ## How it works
 1) Surveyor uploads a file in the Surveyor dashboard.
-- Backend computes the file’s SHA‑256 checksum and tries to upload to IPFS; the IPFS CID is filled server‑side.
-- The checksum and CID are stored in the database; IPFS CID and checksum inputs in the UI are read‑only.
+- Backend (and UI) compute the file’s SHA‑256 checksum; CID may be supplied by an external store (IPFS optional).
+- The checksum and metadata are stored in the database; in the UI the checksum input is read‑only.
 
-2) Anchoring to blockchain
-- Manager-only (from backend) or via MetaMask (optional):
-  - `recordSubmission(surveyId, projectId, ipfsCid, checksum)` stores integrity metadata on-chain and emits `Submitted`.
-  - Additional file hashes can be appended via `addFileHash` (one per attachment).
-- Full on-chain storage (confidential): Manager can “Anchor full file” → the backend encrypts the file in chunks (AES‑256‑GCM) and stores ciphertext on-chain via SSTORE2 pointers.
-  - Keys are managed server-side using a master Key Encryption Key (KEK). No raw data key is returned.
-  - Two modes:
-    - Envelope (default): generate per-file DEK, encrypt chunks; wrap DEK under KEK and store wrapped_dek + metadata in DB.
-    - KDF: derive DEK = HKDF(KEK, salt, info="esims-v1"); store only salt + metadata in DB.  
+2) Anchoring to blockchain (private chain)
+- Manager-only via backend APIs (no MetaMask required):
+  - `recordSubmission(surveyId, projectId, ipfsCid, checksum)` writes integrity metadata on-chain and emits `Submitted`.
+  - Optionally, “Anchor full file” stores the original file on-chain in raw chunks.
+- Chunking: the backend splits the file into bounded payloads and commits them in multiple transactions with a capped gas.
 
-3) Analytics and audit
-- All blockchain txs are recorded in the `transactions` table.
-- The API exposes gas/timing metrics; the Manager UI shows fees over time, gas per tx (with units), and speed histograms.
+3) Verification and recovery
+- Verify Original File (Manager):
+  - Method 1: Compare local SHA‑256 vs on-chain checksum.
+  - Method 2: Verify each raw chunk byte‑for‑byte from chain against the local file, with a progress bar and final verdict.
+- Recovery (Manager → Transactions): reassemble the raw file from on-chain chunks and store it server-side for download.
+
+4) Analytics and audit
+- All chain txs are recorded in the `transactions` table and surfaced in UI with links to the block explorer.
+- Admin dashboard shows system KPIs, API health/latency and recent private-chain activity.
 
 ## Contracts (Solidity ^0.8.24)
 `backend/smartcontracts/contracts/SurveyRegistry.sol`
 
 State
 - `surveys[surveyId] = { projectId, ipfsCid, checksum, status, submitter }`
-- `_fileHashes[surveyId]` (bytes32[]) – per‑file hashes (e.g., SHA‑256)
-- `_encPointers[surveyId]` (address[]) – SSTORE2 pointers for encrypted chunks
-- Legacy (not confidential): `_fileChunks[surveyId]` (bytes[])
+- `_fileHashes[surveyId]` (bytes32[]) – additional file hashes
+- `_fileChunks[surveyId]` (bytes[]) – raw chunks for original file (private chain only)
 
 Key functions
-- Integrity: `recordSubmission`, `addFileHash`, `getFileHashes`
-- Encrypted storage: `addEncryptedChunks(bytes[] payloads)`, `getEncryptedChunkCount`, `getEncryptedChunkPointer`, `readEncryptedChunk`
-- Legacy unencrypted: `addFileChunk(surveyId, bytes)`, `addFileChunks`
+- Integrity: `recordSubmission(uint256, uint256, string, string)`, `addFileHash(uint256, bytes32)`, `getFileHashes(uint256)`
+- Raw storage: `addFileChunk(uint256, bytes)`, `addFileChunks(uint256, bytes[])`, `getFileChunkCount(uint256)`, `getFileChunk(uint256, uint256)`
 
 Events
 - `Submitted`, `Approved`, `Rejected`
-- `FileAttached` (hash-only)
-- `EncryptedChunkStored(surveyId, index, pointer, size, chunkHash, actor, ts)`
-- `FileChunk` (legacy raw chunks)
+- `FileAttached(surveyId, checksum, actor, ts)`
+- `FileChunk(surveyId, index, size, chunkHash, actor, ts)`
 
-SSTORE2
-- Minimal library at `contracts/lib/SSTORE2.sol`; writes data to contract bytecode (cheaper), reads via `extcodecopy`.
-- We store encrypted payloads only: `nonce(12B) || ciphertext || tag(16B)` for each chunk.
-
-## Security model
-- Public chains are readable; never store plaintext if confidentiality matters.
-- Encrypt per chunk with AES‑256‑GCM client/backend‑side; keep keys off‑chain (KMS/DB). Store only ciphertext on‑chain.
-- Integrity: plaintext SHA‑256 is stored and emitted for verification.
+Notes
+- Encrypted storage paths can be supported by the contract (via SSTORE2) but are not used in this deployment.
 
 ## Backend highlights
 Files: `backend/smartcontracts/eth.py`, `backend/surveys/views.py`
-- Auto‑hash (SHA‑256) and auto‑CID (IPFS) on create.
-- Manager‑only chain writes from backend (respecting `skip_chain` flag).
-- `POST /api/surveys/{id}/anchor-file/` (Manager):
-  - Reads file, splits ~24KB, encrypts each chunk (AES‑256‑GCM), calls `addEncryptedChunks`.
-  - Returns `{ anchored_chunks, transactions, enc_scheme, key_version }` (no raw key).  
-    Encryption metadata (e.g., `enc_scheme`, `key_version`, `wrapped_dek_b64` or `kdf_salt_b64`, and `enc_chunk_size`) is stored on the `Survey` row.
-- Transactions API `/api/transactions/`: includes `etherscan_url`, `status`, `gas_used`, `effective_gas_price`, `fee_wei`, `fee_eth`, `block_timestamp`, `speed_seconds`.
+- Auto SHA‑256 on create; manager-only chain writes (respect `skip_chain`).
+- Endpoints (abbrev):
+  - `POST /api/surveys/{id}/record-chain/` → write header on-chain.
+  - `POST /api/surveys/{id}/anchor-file/` → store raw chunks on private chain.
+  - `POST /api/surveys/{id}/recover-file/` → reconstruct file from chain and store server-side.
+  - `GET /api/surveys/{id}/onchain-record/` → fetch header JSON (download supported in UI).
+  - `GET /api/surveys/{id}/chunks/` → list count; `GET /api/surveys/{id}/chunks/{i}/download/` → fetch chunk bytes.
+- Transactions API `/api/transactions/`: includes block numbers and optional explorer URLs.
 
 ## Frontend highlights
-- Surveyor Submit: multiple files, auto SHA‑256, read‑only CID/checksum, optional MetaMask anchoring.
-- Manager Verification: Approve/Reject, “Anchor full file” (calls backend to store encrypted chunks on-chain).
-- Manager Transactions Log: all txs with Etherscan links.
-- Reports & Analytics: fee over time, gas per tx (units shown), speed histogram, KPIs.
+- Surveyor Submit: file upload, auto SHA‑256, clearer validation.
+- Manager Verification: Approve/Reject, Record on chain, Anchor full file; buttons auto-disable while pending.
+- Verify Original File (new): 2-step verification with progress bars; drag‑drop; clear empty/loaded states.
+- Transactions Log: grouped by survey, chunk list grouped 0–99, 100–199… with per‑chunk sizes; recovery workflow.
+- Admin Dashboard (new): system health (API online/latency, recent chain activity) and KPIs.
+- Global toasts and consistent progress indicators.
 
 ## Environment
-Backend `.env` (see `backend/env.example`):
+Backend `.env` (example):
 ```
 ETH_RPC_URL=http://127.0.0.1:8545
 ETH_CHAIN_ID=31337
-ETH_CONTRACT_ADDRESS=0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9
-ETH_PRIVATE_KEY=0x<one_prefunded_key_from_hardhat_node>
+ETH_CONTRACT_ADDRESS=0x... # address from your deploy
+ETH_PRIVATE_KEY=0x...      # prefunded account on the private node
+# Optional: IPFS gateway/API settings if you use IPFS
 IPFS_API_URL=/dns/127.0.0.1/tcp/5001/http
-# Encryption (server-managed keys)
-ENC_SCHEME=envelope-aeskw-v1   # or kdf-hkdf-v1
-DATA_KEK_B64=BASE64_OF_YOUR_KEK_BYTES   # e.g. ZXhhbXBsZV9rZWtfMzJieXRlcw==
-DATA_KEK_VERSION=1
 ```
 
-Frontend `.env`:
+Frontend `.env` (optional overrides):
 ```
-VITE_DEV_API_PROXY_TARGET=http://127.0.0.1:8000
-VITE_CONTRACT_ADDRESS=0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9
+VITE_API_BASE=http://127.0.0.1:8000/api/
+VITE_CONTRACT_ADDRESS=0x...
 VITE_ETH_CHAIN_ID=31337
 ```
+(If `VITE_API_BASE` is not set, the UI uses `window.location.origin + /api/`.)
 
 ## Dev commands
 From `backend/smartcontracts`:
@@ -96,24 +90,22 @@ From `backend/smartcontracts`:
 - Start local chain: `npx hardhat node --hostname 127.0.0.1 --port 8545`
 - Compile: `npx hardhat compile`
 - Deploy localhost: `npm run deploy:localhost`
-- Export ABI for backend: `npm run export:abi`
+- Export ABI for backend+frontend: `npm run export:abi`
 
 Backend:
 - Install Python deps: `pip install -r backend/requirements.txt`
-- Run Django as usual (`manage.py runserver`); ensure `.env` is set.
+- Run Django API: `python manage.py runserver` (ensure `.env` is configured)
 
 Frontend:
 - `npm install`
-- `npm run dev` or `npm run build && npm run preview`
+- `npm run dev` (Vite) or `npm run build && npm run preview`
 
-## Recovering encrypted files from chain
+## Recovery and verification (raw chunks)
 Given `surveyId`:
-1) Count: `getEncryptedChunkCount(surveyId)`.
-2) For each `i`: pointer via `getEncryptedChunkPointer(surveyId, i)` then bytes via `readEncryptedChunk(surveyId, i)`.
-3) Split payload: `nonce(12) || ciphertext || tag(16)`.
-4) Obtain DEK:
-   - Envelope mode: get `wrapped_dek_b64` + `key_version` from DB; unwrap with your KEK (matched by `key_version`).
-   - KDF mode: get `kdf_salt_b64` + `key_version` from DB; derive DEK = HKDF(KEK, salt, info="esims-v1").
-5) Decrypt each payload with AES‑GCM using the DEK and reassemble.
+1) Count chunks: `GET /api/surveys/{id}/chunks/` → `{ count }`.
+2) For `i` in `[0..count-1]`: `GET /api/surveys/{id}/chunks/{i}/download/` to stream bytes.
+3) Concatenate in order; the UI can do server-side recovery via `POST /recover-file/`.
 
-Only the KEK (and DB metadata) is required to recover; nothing sensitive is on-chain.
+To verify originality without recovery:
+- Compare your local SHA‑256 with the on-chain checksum (`GET /onchain-record/`).
+- Optionally verify chunks byte-for-byte using the Verify Original File page.

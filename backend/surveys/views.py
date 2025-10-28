@@ -7,6 +7,7 @@ from pathlib import Path
 from rest_framework.parsers import MultiPartParser, FormParser
 import hashlib
 import os
+from django.http import HttpResponse
 try:
     import ipfshttpclient  # type: ignore
 except Exception:  # pragma: no cover
@@ -171,6 +172,262 @@ class SurveyViewSet(viewsets.ModelViewSet):
                 # Do not block normal flow if chain is misconfigured
                 pass
 
+    @action(detail=True, methods=["post"], url_path="record-chain")
+    def record_chain(self, request, pk=None):
+        user = request.user
+        role = getattr(getattr(user, "profile", None), "role", None)
+        if not (user.is_staff or user.is_superuser or role in ("admin", "manager")):
+            return Response({"detail": "Not authorized"}, status=status.HTTP_403_FORBIDDEN)
+        survey = self.get_object()
+        if eth_record_submission is None:
+            return Response({"detail": "Blockchain integration not configured"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        # Guard: disallow if already anchored or recorded
+        try:
+            from smartcontracts.eth import get_file_chunk_count as eth_get_count
+            cnt = eth_get_count(survey.id)
+            if cnt and int(cnt) > 0:
+                return Response({"detail": "Full file already anchored on-chain"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            pass
+        try:
+            from smartcontracts.eth import get_onchain_record as eth_get_onchain_record
+            rec = eth_get_onchain_record(survey.id)
+            if rec and rec.get("submitter") and str(rec.get("submitter")).lower() != "0x0000000000000000000000000000000000000000":
+                return Response({"detail": "Submission already recorded on-chain"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            pass
+        tx_hashes = []
+        try:
+            txh, blk = eth_record_submission(survey.id, survey.project_id, survey.ipfs_cid or "", survey.checksum_sha256 or "")
+            tx_hashes.append(txh)
+            Transaction.objects.create(
+                survey=survey,
+                public_anchor_tx_hash=txh,
+                public_block_number=blk,
+                private_tx_hash=txh,
+            )
+            # Best-effort: also attach primary file hash if present
+            try:
+                from smartcontracts.eth import add_file_hash as eth_add_file_hash
+                if survey.checksum_sha256:
+                    txh2, blk2 = eth_add_file_hash(survey.id, survey.checksum_sha256)
+                    tx_hashes.append(txh2)
+                    Transaction.objects.create(
+                        survey=survey,
+                        public_anchor_tx_hash=txh2,
+                        public_block_number=blk2,
+                        private_tx_hash=txh2,
+                    )
+            except Exception:
+                pass
+        except Exception as e:
+            return Response({"detail": f"On-chain submit failed: {e}"}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({"transactions": tx_hashes})
+
+    @action(detail=True, methods=["post"], url_path="anchor-file")
+    def anchor_file(self, request, pk=None):
+        user = request.user
+        role = getattr(getattr(user, "profile", None), "role", None)
+        if not (user.is_staff or user.is_superuser or role in ("admin", "manager")):
+            return Response({"detail": "Not authorized"}, status=status.HTTP_403_FORBIDDEN)
+        survey = self.get_object()
+        # Guard: disallow if already anchored
+        try:
+            from smartcontracts.eth import get_file_chunk_count as eth_get_count
+            cnt = eth_get_count(survey.id)
+            if cnt and int(cnt) > 0:
+                return Response({"detail": "Full file already anchored on-chain"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            pass
+        if not getattr(survey, "file", None):
+            return Response({"detail": "No file uploaded for this survey"}, status=status.HTTP_400_BAD_REQUEST)
+        # Read file bytes and chunk (raw)
+        try:
+            f = survey.file
+            path = getattr(f, "path", None)
+            try:
+                CHUNK = int(os.getenv("RAW_CHUNK_KB", "24")) * 1024
+            except Exception:
+                CHUNK = 24 * 1024
+            chunks: list[bytes] = []
+            if path:
+                with open(path, "rb") as fh:
+                    while True:
+                        b = fh.read(CHUNK)
+                        if not b:
+                            break
+                        chunks.append(b)
+            else:
+                data = f.read()
+                for i in range(0, len(data), CHUNK):
+                    chunks.append(data[i:i+CHUNK])
+        except Exception:
+            return Response({"detail": "Failed to read file"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Submit raw chunks on-chain (private chain)
+        try:
+            from smartcontracts.eth import add_file_chunks as eth_add_file_chunks
+        except Exception:
+            return Response({"detail": "Blockchain integration not configured"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        tx_hashes = []
+        # Ensure the survey exists on-chain first
+        try:
+            if eth_record_submission is not None:
+                try:
+                    tx0, blk0 = eth_record_submission(survey.id, survey.project_id, survey.ipfs_cid or "", survey.checksum_sha256 or "")
+                    Transaction.objects.create(
+                        survey=survey,
+                        public_anchor_tx_hash=tx0,
+                        public_block_number=blk0,
+                        private_tx_hash=tx0,
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # Batch writes
+        try:
+            MAX_PER_TX = int(os.getenv("MAX_PAYLOADS_PER_TX", "1") or 1)
+            if MAX_PER_TX <= 0:
+                MAX_PER_TX = 1
+        except Exception:
+            MAX_PER_TX = 1
+        try:
+            if chunks:
+                for i in range(0, len(chunks), MAX_PER_TX):
+                    batch = chunks[i:i+MAX_PER_TX]
+                    txh, blk = eth_add_file_chunks(survey.id, batch)
+                    tx_hashes.append(txh)
+                    Transaction.objects.create(
+                        survey=survey,
+                        public_anchor_tx_hash=txh,
+                        public_block_number=blk,
+                        private_tx_hash=txh,
+                    )
+        except Exception as e:
+            return Response({"detail": f"On-chain storage failed: {e}"}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response({
+            "anchored_chunks": len(chunks),
+            "transactions": tx_hashes,
+            "mode": "raw",
+            "chunk_size": CHUNK,
+        })
+
+    @action(detail=True, methods=["get"], url_path="chunks")
+    def list_chunks(self, request, pk=None):
+        user = request.user
+        role = getattr(getattr(user, "profile", None), "role", None)
+        if not (user.is_staff or user.is_superuser or role in ("admin", "manager")):
+            return Response({"detail": "Not authorized"}, status=status.HTTP_403_FORBIDDEN)
+        survey = self.get_object()
+        try:
+            from smartcontracts.eth import get_file_chunk_count as eth_get_count
+        except Exception:
+            return Response({"detail": "Blockchain integration not configured"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        try:
+            total = eth_get_count(survey.id)
+        except Exception as e:
+            return Response({"detail": f"Failed to read chunk count: {e}"}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({"count": int(total)})
+
+    @action(detail=True, methods=["get"], url_path=r"chunks/(?P<index>\d+)/download")
+    def download_chunk(self, request, pk=None, index: str = "0"):
+        user = request.user
+        role = getattr(getattr(user, "profile", None), "role", None)
+        if not (user.is_staff or user.is_superuser or role in ("admin", "manager")):
+            return Response({"detail": "Not authorized"}, status=status.HTTP_403_FORBIDDEN)
+        survey = self.get_object()
+        try:
+            idx = int(index)
+        except Exception:
+            return Response({"detail": "Invalid chunk index"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            from smartcontracts.eth import get_file_chunk_count as eth_get_count, read_file_chunk as eth_get_chunk
+        except Exception:
+            return Response({"detail": "Blockchain integration not configured"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        try:
+            total = eth_get_count(survey.id)
+            if idx < 0 or idx >= int(total):
+                return Response({"detail": "Chunk index out of range"}, status=status.HTTP_400_BAD_REQUEST)
+            payload = eth_get_chunk(survey.id, idx)
+            if not payload:
+                return Response({"detail": "Empty chunk"}, status=status.HTTP_502_BAD_GATEWAY)
+            resp = HttpResponse(payload, content_type="application/octet-stream")
+            resp["Content-Disposition"] = f"attachment; filename=chunk_{survey.id}_{idx}.bin"
+            return resp
+        except Exception as e:
+            return Response({"detail": f"Failed to read chunk: {e}"}, status=status.HTTP_502_BAD_GATEWAY)
+
+    @action(detail=True, methods=["get"], url_path="onchain-record")
+    def onchain_record(self, request, pk=None):
+        user = request.user
+        role = getattr(getattr(user, "profile", None), "role", None)
+        if not (user.is_staff or user.is_superuser or role in ("admin", "manager")):
+            return Response({"detail": "Not authorized"}, status=status.HTTP_403_FORBIDDEN)
+        survey = self.get_object()
+        try:
+            from smartcontracts.eth import get_onchain_record as eth_get_onchain_record
+        except Exception:
+            return Response({"detail": "Blockchain integration not configured"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        try:
+            rec = eth_get_onchain_record(survey.id)
+        except Exception as e:
+            return Response({"detail": f"Failed to read on-chain record: {e}"}, status=status.HTTP_502_BAD_GATEWAY)
+        if not rec or not rec.get("submitter") or str(rec.get("submitter")).lower() == "0x0000000000000000000000000000000000000000":
+            return Response({"detail": "No on-chain record for this survey"}, status=status.HTTP_404_NOT_FOUND)
+        # Map status code to name
+        status_map = {0: "None", 1: "Submitted", 2: "Approved", 3: "Rejected"}
+        try:
+            code = int(rec.get("status"))
+        except Exception:
+            code = None
+        rec["status_name"] = status_map.get(code, None)
+        # Optionally force download
+        download = str(request.query_params.get("download", "")).lower() in ("1", "true", "yes")
+        resp = Response(rec)
+        if download:
+            resp["Content-Disposition"] = f"attachment; filename=onchain_record_{survey.id}.json"
+        return resp
+
+    @action(detail=True, methods=["post"], url_path="recover-file")
+    def recover_file(self, request, pk=None):
+        user = request.user
+        role = getattr(getattr(user, "profile", None), "role", None)
+        if not (user.is_staff or user.is_superuser or role in ("admin", "manager")):
+            return Response({"detail": "Not authorized"}, status=status.HTTP_403_FORBIDDEN)
+        survey = self.get_object()
+        # Read raw chunks from chain and reassemble
+        try:
+            from smartcontracts.eth import get_file_chunk_count as eth_get_count, read_file_chunk as eth_get_chunk
+        except Exception:
+            return Response({"detail": "Blockchain integration not configured"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        try:
+            total = eth_get_count(survey.id)
+        except Exception as e:
+            return Response({"detail": f"Failed to read chunk count: {e}"}, status=status.HTTP_502_BAD_GATEWAY)
+        if total <= 0:
+            return Response({"detail": "No on-chain chunks found for this survey"}, status=status.HTTP_400_BAD_REQUEST)
+        # Reassemble
+        try:
+            from django.core.files.base import ContentFile
+        except Exception:
+            return Response({"detail": "Django file system unavailable"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        try:
+            parts: list[bytes] = []
+            for i in range(total):
+                payload = eth_get_chunk(survey.id, i)
+                if not payload:
+                    return Response({"detail": f"Invalid payload at chunk {i}"}, status=status.HTTP_502_BAD_GATEWAY)
+                parts.append(payload)
+            data = b"".join(parts)
+            ext = survey.file_ext or "bin"
+            name = f"recovered_{survey.id}.{ext}"
+            survey.recovered_file.save(name, ContentFile(data), save=True)
+            return Response({"recovered_bytes": len(data), "stored": True, "download_url": survey.recovered_file.url if getattr(survey.recovered_file, "url", None) else None})
+        except Exception as e:
+            return Response({"detail": f"Recovery failed: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
     @action(detail=True, methods=["post"], url_path="approve")
     def approve(self, request, pk=None):
         user = request.user
@@ -178,6 +435,8 @@ class SurveyViewSet(viewsets.ModelViewSet):
         if not (user.is_staff or user.is_superuser or role in ("admin", "manager")):
             return Response({"detail": "Not authorized"}, status=status.HTTP_403_FORBIDDEN)
         survey = self.get_object()
+        if survey.status != "submitted":
+            return Response({"detail": f"Cannot approve a survey in '{survey.status}' state"}, status=status.HTTP_400_BAD_REQUEST)
         survey.status = "approved"
         survey.save(update_fields=["status", "updated_at"])
         # Optional: write to Ethereum and store tx (unless skip_chain requested)
@@ -210,6 +469,8 @@ class SurveyViewSet(viewsets.ModelViewSet):
         if not (user.is_staff or user.is_superuser or role in ("admin", "manager")):
             return Response({"detail": "Not authorized"}, status=status.HTTP_403_FORBIDDEN)
         survey = self.get_object()
+        if survey.status != "submitted":
+            return Response({"detail": f"Cannot reject a survey in '{survey.status}' state"}, status=status.HTTP_400_BAD_REQUEST)
         survey.status = "rejected"
         survey.save(update_fields=["status", "updated_at"])
         # Optional: write to Ethereum and store tx (unless skip_chain requested)
@@ -235,215 +496,3 @@ class SurveyViewSet(viewsets.ModelViewSet):
                 pass
         return Response(SurveySerializer(survey).data)
 
-    @action(detail=True, methods=["post"], url_path="anchor-file")
-    def anchor_file(self, request, pk=None):
-        user = request.user
-        role = getattr(getattr(user, "profile", None), "role", None)
-        if not (user.is_staff or user.is_superuser or role in ("admin", "manager")):
-            return Response({"detail": "Not authorized"}, status=status.HTTP_403_FORBIDDEN)
-        survey = self.get_object()
-        if not getattr(survey, "file", None):
-            return Response({"detail": "No file uploaded for this survey"}, status=status.HTTP_400_BAD_REQUEST)
-        # Read file bytes and chunk
-        try:
-            f = survey.file
-            path = getattr(f, "path", None)
-            CHUNK = 24 * 1024  # 24KB per chunk
-            chunks: list[bytes] = []
-            if path:
-                with open(path, "rb") as fh:
-                    while True:
-                        b = fh.read(CHUNK)
-                        if not b:
-                            break
-                        chunks.append(b)
-            else:
-                data = f.read()
-                for i in range(0, len(data), CHUNK):
-                    chunks.append(data[i:i+CHUNK])
-        except Exception:
-            return Response({"detail": "Failed to read file"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        # Encrypt per-chunk with AES-256-GCM (nonce||ciphertext+tag) and manage keys via envelope or KDF
-        try:
-            from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # type: ignore
-            from cryptography.hazmat.primitives.keywrap import aes_key_wrap  # type: ignore
-            from cryptography.hazmat.primitives.kdf.hkdf import HKDF  # type: ignore
-            from cryptography.hazmat.primitives import hashes  # type: ignore
-            import os as _os
-            import base64 as _b64
-        except Exception:
-            return Response({"detail": "Encryption module not available"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
-        scheme = os.getenv("ENC_SCHEME", "envelope-aeskw-v1").strip() or "envelope-aeskw-v1"
-        key_version = int(os.getenv("DATA_KEK_VERSION", "1") or 1)
-        wrapped_dek_b64: str | None = None
-        kdf_salt_b64: str | None = None
-        try:
-            if scheme == "envelope-aeskw-v1":
-                # Require KEK from env
-                kek_b64 = os.getenv("DATA_KEK_B64", "").strip()
-                if not kek_b64:
-                    return Response({"detail": "KEK not configured (DATA_KEK_B64)"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-                kek = _b64.b64decode(kek_b64)
-                if len(kek) not in (16, 24, 32):
-                    return Response({"detail": "Invalid KEK length for AES key wrap"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-                dek = AESGCM.generate_key(bit_length=256)
-                aead = AESGCM(dek)
-                payloads: list[bytes] = []
-                for pt in chunks:
-                    nonce = _os.urandom(12)
-                    ct = aead.encrypt(nonce, pt, None)  # ciphertext||tag
-                    payloads.append(nonce + ct)
-                wrapped = aes_key_wrap(kek, dek)
-                wrapped_dek_b64 = _b64.b64encode(wrapped).decode()
-            elif scheme == "kdf-hkdf-v1":
-                kek_b64 = os.getenv("DATA_KEK_B64", "").strip()
-                if not kek_b64:
-                    return Response({"detail": "KEK not configured (DATA_KEK_B64)"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-                kek = _b64.b64decode(kek_b64)
-                salt = _os.urandom(16)
-                kdf = HKDF(algorithm=hashes.SHA256(), length=32, salt=salt, info=b"esims-v1")
-                dek = kdf.derive(kek)
-                aead = AESGCM(dek)
-                payloads = []
-                for pt in chunks:
-                    nonce = _os.urandom(12)
-                    ct = aead.encrypt(nonce, pt, None)
-                    payloads.append(nonce + ct)
-                kdf_salt_b64 = _b64.b64encode(salt).decode()
-            else:
-                return Response({"detail": "Unsupported encryption scheme"}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception:
-            return Response({"detail": "Encryption failed"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        # Submit encrypted payloads via SSTORE2 pointers
-        try:
-            from smartcontracts.eth import add_encrypted_chunks as eth_add_encrypted_chunks
-        except Exception:
-            return Response({"detail": "Blockchain integration not configured"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        tx_hashes = []
-        try:
-            if payloads:
-                txh, blk = eth_add_encrypted_chunks(survey.id, payloads)
-                tx_hashes.append(txh)
-                Transaction.objects.create(
-                    survey=survey,
-                    public_anchor_tx_hash=txh,
-                    public_block_number=blk,
-                    private_tx_hash=txh,
-                )
-        except Exception:
-            return Response({"detail": "On-chain storage failed"}, status=status.HTTP_502_BAD_GATEWAY)
-
-        # Save encryption metadata on the survey
-        try:
-            survey.enc_scheme = scheme
-            survey.key_version = key_version
-            survey.wrapped_dek_b64 = wrapped_dek_b64
-            survey.kdf_salt_b64 = kdf_salt_b64
-            survey.enc_chunk_size = CHUNK
-            survey.save(update_fields=[
-                "enc_scheme",
-                "key_version",
-                "wrapped_dek_b64",
-                "kdf_salt_b64",
-                "enc_chunk_size",
-                "updated_at",
-            ])
-        except Exception:
-            pass
-
-        return Response({
-            "anchored_chunks": len(payloads),
-            "transactions": tx_hashes,
-            "enc_scheme": scheme,
-            "key_version": key_version,
-            "chunk_format": "nonce(12 bytes) || ciphertext||tag(16 bytes tag at end)",
-        })
-
-    @action(detail=True, methods=["post"], url_path="recover-file")
-    def recover_file(self, request, pk=None):
-        user = request.user
-        role = getattr(getattr(user, "profile", None), "role", None)
-        if not (user.is_staff or user.is_superuser or role in ("admin", "manager")):
-            return Response({"detail": "Not authorized"}, status=status.HTTP_403_FORBIDDEN)
-        survey = self.get_object()
-        if not survey.enc_scheme:
-            return Response({"detail": "No encrypted on-chain data for this survey"}, status=status.HTTP_400_BAD_REQUEST)
-        # Load manager KEK from their profile
-        prof = getattr(user, "profile", None)
-        body_kek_b64 = request.data.get("data_kek_b64") if isinstance(getattr(request, "data", {}), dict) else None
-        body_kek_version = request.data.get("data_kek_version") if isinstance(getattr(request, "data", {}), dict) else None
-        kek_b64_to_use = (body_kek_b64 or "").strip() or (getattr(prof, "data_kek_b64", None) if prof else None)
-        if not kek_b64_to_use:
-            return Response({"detail": "Manager key not provided and not set in profile"}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            kv = int(body_kek_version) if body_kek_version is not None else int(getattr(prof, "data_kek_version", 1))
-        except Exception:
-            kv = int(getattr(prof, "data_kek_version", 1))
-        if kv != getattr(survey, "key_version", 1):
-            return Response({"detail": "Provided/Stored key version does not match survey key_version"}, status=status.HTTP_400_BAD_REQUEST)
-        # Read encrypted chunks from chain
-        try:
-            from smartcontracts.eth import get_encrypted_chunk_count as eth_get_count, read_encrypted_chunk as eth_read_chunk
-        except Exception:
-            return Response({"detail": "Blockchain integration not configured"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        try:
-            total = eth_get_count(survey.id)
-        except Exception as e:
-            return Response({"detail": f"Failed to read chunk count: {e}"}, status=status.HTTP_502_BAD_GATEWAY)
-        if total <= 0:
-            return Response({"detail": "No encrypted chunks found on-chain"}, status=status.HTTP_400_BAD_REQUEST)
-        # Derive/unwrap DEK
-        try:
-            import base64 as _b64
-            from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # type: ignore
-            from cryptography.hazmat.primitives.kdf.hkdf import HKDF  # type: ignore
-            from cryptography.hazmat.primitives import hashes  # type: ignore
-            from cryptography.hazmat.primitives.keywrap import aes_key_unwrap  # type: ignore
-        except Exception:
-            return Response({"detail": "Crypto module not available"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
-        try:
-            kek = _b64.b64decode(kek_b64_to_use)
-            if survey.enc_scheme == "envelope-aeskw-v1":
-                if not survey.wrapped_dek_b64:
-                    return Response({"detail": "Missing wrapped key on survey"}, status=status.HTTP_400_BAD_REQUEST)
-                wrapped = _b64.b64decode(survey.wrapped_dek_b64)
-                dek = aes_key_unwrap(kek, wrapped)
-            elif survey.enc_scheme == "kdf-hkdf-v1":
-                if not survey.kdf_salt_b64:
-                    return Response({"detail": "Missing KDF salt on survey"}, status=status.HTTP_400_BAD_REQUEST)
-                salt = _b64.b64decode(survey.kdf_salt_b64)
-                kdf = HKDF(algorithm=hashes.SHA256(), length=32, salt=salt, info=b"esims-v1")
-                dek = kdf.derive(kek)
-            else:
-                return Response({"detail": "Unsupported enc_scheme"}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            return Response({"detail": f"Key derivation failed: {e}"}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Decrypt all chunks and store to recovered_file
-        try:
-            from django.core.files.base import ContentFile
-        except Exception:
-            return Response({"detail": "Django file system unavailable"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        try:
-            aead = AESGCM(dek)
-            parts: list[bytes] = []
-            for i in range(total):
-                payload = eth_read_chunk(survey.id, i)
-                if not payload or len(payload) < 12 + 16:
-                    return Response({"detail": f"Invalid payload at chunk {i}"}, status=status.HTTP_502_BAD_GATEWAY)
-                nonce = payload[:12]
-                ct = payload[12:]
-                pt = aead.decrypt(nonce, ct, None)
-                parts.append(pt)
-            data = b"".join(parts)
-            ext = survey.file_ext or "bin"
-            name = f"recovered_{survey.id}.{ext}"
-            survey.recovered_file.save(name, ContentFile(data), save=True)
-            return Response({"recovered_bytes": len(data), "stored": True})
-        except Exception as e:
-            return Response({"detail": f"Recovery failed: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

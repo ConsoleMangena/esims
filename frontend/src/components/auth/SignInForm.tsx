@@ -30,7 +30,10 @@ export default function SignInForm() {
       login(access, refresh, role);
       navigate("/", { replace: true });
     } catch (err: any) {
-      setError(err?.response?.data?.detail || "Invalid credentials or server error");
+      const status = err?.response?.status;
+      if (status === 401) setError("Incorrect username or password");
+      else if (status === 429) setError("Too many attempts. Please wait and try again.");
+      else setError(err?.response?.data?.detail || "Sign-in failed. Please try again.");
     }
   };
 

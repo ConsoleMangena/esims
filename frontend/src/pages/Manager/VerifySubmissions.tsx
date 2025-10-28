@@ -3,8 +3,8 @@ import PageMeta from "../../components/common/PageMeta";
 import { useEffect, useMemo, useState } from "react";
 import { approveSurvey, listSurveys, rejectSurvey, type Survey } from "../../lib/surveys";
 import { listProjects, type Project } from "../../lib/projects";
-import { listTransactions, createTransaction } from "../../lib/transactions";
-import { markApprovedMM, markRejectedMM } from "../../lib/eth";
+import { listTransactions } from "../../lib/transactions";
+import { useToast } from "../../context/ToastContext";
 
 export default function VerifySubmissions() {
   const [items, setItems] = useState<Survey[]>([]);
@@ -13,7 +13,8 @@ export default function VerifySubmissions() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
-  const [useMM, setUseMM] = useState<boolean>(false);
+  const [pendingAction, setPendingAction] = useState<null | "approve" | "reject" | "record" | "anchor">(null);
+  const { success, error: toastError, info: toastInfo } = useToast();
 
   useEffect(() => {
     (async () => {
@@ -65,87 +66,104 @@ export default function VerifySubmissions() {
 
   async function onApprove(id: number) {
     setBusyId(id);
+    setPendingAction("approve");
     setError(null);
     try {
-      const updated = await approveSurvey(id, { skipChain: useMM, silent: true });
-      if (useMM) {
-        try {
-          const { hash } = await markApprovedMM(id);
-          try { await createTransaction({ survey: id, public_anchor_tx_hash: hash }); } catch {}
-        } catch (e: any) {
-          setError(e?.message || "MetaMask transaction failed");
-        }
-      }
+      const updated = await approveSurvey(id, { silent: true });
       setItems((arr) => arr.map((s) => (s.id === id ? updated : s)));
+      success("Submission approved");
     } catch (e: any) {
-      setError(e?.response?.data?.detail || "Approve failed");
+      const msg = e?.response?.data?.detail || "Approve failed";
+      setError(msg);
+      toastError(msg);
     } finally {
       setBusyId(null);
+      setPendingAction(null);
+    }
+  }
+
+
+  async function onReject(id: number) {
+    setBusyId(id);
+    setPendingAction("reject");
+    setError(null);
+    try {
+      const updated = await rejectSurvey(id, { silent: true });
+      setItems((arr) => arr.map((s) => (s.id === id ? updated : s)));
+      success("Submission rejected");
+    } catch (e: any) {
+      const msg = e?.response?.data?.detail || "Reject failed";
+      setError(msg);
+      toastError(msg);
+    } finally {
+      setBusyId(null);
+      setPendingAction(null);
+    }
+  }
+
+  async function onRecordChain(id: number) {
+    const s = items.find((x) => x.id === id);
+    if (s && (s.has_onchain_record || s.has_onchain_file)) {
+      toastInfo("Already recorded on-chain.");
+      return;
+    }
+    setBusyId(id);
+    setPendingAction("record");
+    setError(null);
+    setInfo(null);
+    try {
+      const { recordOnChain, listSurveys: reload } = await import("../../lib/surveys");
+      const res = await recordOnChain(id, { silent: true });
+      const n = (res?.transactions || []).length;
+      const msg = `Recorded submission on private chain (${n} tx).`;
+      setInfo(msg);
+      toastInfo(msg);
+      // Reload to reflect has_onchain_* flags
+      const fresh = await reload();
+      setItems(fresh);
+    } catch (e: any) {
+      const msg = e?.response?.data?.detail || e?.message || "Record failed";
+      setError(msg);
+      toastError(msg);
+    } finally {
+      setBusyId(null);
+      setPendingAction(null);
     }
   }
 
   async function onAnchorFull(id: number) {
+    const s = items.find((x) => x.id === id);
+    if (s && s.has_onchain_file) {
+      toastInfo("Full file already anchored on-chain.");
+      return;
+    }
+    if (s && !s.file) {
+      toastError("No uploaded file available to anchor.");
+      return;
+    }
     setBusyId(id);
+    setPendingAction("anchor");
     setError(null);
     setInfo(null);
     try {
-      const res = await (await import("../../lib/surveys")).anchorFullFile(id, { silent: true });
+      const { anchorFullFile, listSurveys: reload } = await import("../../lib/surveys");
+      const res = await anchorFullFile(id, { silent: true });
       const chunks = (res as any)?.anchored_chunks ?? 0;
-      setInfo(`Anchored ${chunks} encrypted chunk(s). Keys stored securely by server (no raw key returned).`);
-      // Optionally refresh transactions link by no-op state change
-      setItems((arr) => arr.slice());
-    } catch (e: any) {
-      setError(e?.response?.data?.detail || e?.message || "Anchor failed");
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  async function onReject(id: number) {
-    setBusyId(id);
-    setError(null);
-    try {
-      const updated = await rejectSurvey(id, { skipChain: useMM, silent: true });
-      if (useMM) {
-        try {
-          const { hash } = await markRejectedMM(id);
-          try { await createTransaction({ survey: id, public_anchor_tx_hash: hash }); } catch {}
-        } catch (e: any) {
-          setError(e?.message || "MetaMask transaction failed");
-        }
-      }
-      setItems((arr) => arr.map((s) => (s.id === id ? updated : s)));
-    } catch (e: any) {
-      setError(e?.response?.data?.detail || "Reject failed");
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  async function onRecover(id: number) {
-    setBusyId(id);
-    setError(null);
-    setInfo(null);
-    try {
-      const kek = window.prompt("Enter base64 master key (leave blank to use your stored profile key):", "");
-      let body: any = undefined;
-      if (kek && kek.trim()) {
-        const verInput = window.prompt("Enter key version (defaults to your profile version):", "");
-        const ver = verInput && verInput.trim() ? parseInt(verInput.trim(), 10) : undefined;
-        body = { data_kek_b64: kek.trim(), ...(ver ? { data_kek_version: ver } : {}) };
-      }
-      const { recoverFullFile } = await import("../../lib/surveys");
-      const res = await recoverFullFile(id, body, { silent: true });
-      setInfo(`Recovered ${res?.recovered_bytes || 0} bytes and stored file in server.`);
-      // Optionally refresh to pick up recovered_file field
-      const fresh = await listSurveys();
+      const msg = `Anchored ${chunks} raw chunk(s) on your private chain.`;
+      setInfo(msg);
+      success(msg);
+      const fresh = await reload();
       setItems(fresh);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || e?.message || "Recovery failed");
+      const msg = e?.response?.data?.detail || e?.message || "Anchor failed";
+      setError(msg);
+      toastError(msg);
     } finally {
       setBusyId(null);
+      setPendingAction(null);
     }
   }
+
 
   return (
     <>
@@ -155,12 +173,6 @@ export default function VerifySubmissions() {
       />
       <PageBreadcrumb pageTitle="Survey Data Verification" />
       <div className="rounded-2xl border border-gray-200 bg-white px-5 py-6 dark:border-gray-800 dark:bg-white/[0.03]">
-        <div className="mb-3">
-          <label className="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-            <input type="checkbox" checked={useMM} onChange={(e)=>setUseMM(e.target.checked)} className="h-4 w-4 rounded border-gray-300 dark:border-gray-700" />
-            Use MetaMask for on-chain record
-          </label>
-        </div>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead>
@@ -169,11 +181,22 @@ export default function VerifySubmissions() {
                 <th className="py-2 pr-4">Project</th>
                 <th className="py-2 pr-4">IPFS CID</th>
                 <th className="py-2 pr-4">On-chain</th>
-                <th className="py-2 pr-4">Recovered</th>
+                <th className="py-2 pr-4">Original</th>
                 <th className="py-2 pr-4">Actions</th>
               </tr>
             </thead>
             <tbody>
+              {loading && (
+                <tr>
+                  <td colSpan={6} className="py-4">
+                    <div className="animate-pulse space-y-2">
+                      <div className="h-4 bg-gray-100 dark:bg-white/5 rounded"></div>
+                      <div className="h-4 bg-gray-100 dark:bg-white/5 rounded w-5/6"></div>
+                      <div className="h-4 bg-gray-100 dark:bg-white/5 rounded w-2/3"></div>
+                    </div>
+                  </td>
+                </tr>
+              )}
               {(queue || []).map((s) => (
                 <tr key={s.id} className="border-t border-gray-100 dark:border-gray-800">
                   <td className="py-2 pr-4 text-gray-800 dark:text-white/90">{s.title}</td>
@@ -185,36 +208,48 @@ export default function VerifySubmissions() {
                     <TxLink surveyId={s.id} />
                   </td>
                   <td className="py-2 pr-4 text-gray-500 truncate max-w-[200px]">
-                    {s.recovered_file ? (
-                      <a href={s.recovered_file} className="text-brand-600 hover:underline" target="_blank" rel="noreferrer">Download</a>
+                    {s.file ? (
+                      <a href={s.file} className="text-brand-600 hover:underline" target="_blank" rel="noreferrer">Download</a>
                     ) : (
                       <span className="text-gray-400">—</span>
                     )}
                   </td>
                   <td className="py-2 pr-4">
                     <div className="flex flex-wrap gap-2">
-                      <button
-                        disabled={busyId === s.id}
-                        onClick={() => onApprove(s.id)}
-                        className="px-3 py-1 rounded bg-green-600 text-white disabled:opacity-50"
-                      >Approve</button>
-                      <button
-                        disabled={busyId === s.id}
-                        onClick={() => onReject(s.id)}
-                        className="px-3 py-1 rounded bg-red-600 text-white disabled:opacity-50"
-                      >Reject</button>
-                      <button
-                        disabled={busyId === s.id}
-                        onClick={() => onAnchorFull(s.id)}
-                        className="px-3 py-1 rounded bg-blue-600 text-white disabled:opacity-50"
-                        title="Store the entire file content on-chain in chunks"
-                      >Anchor full file</button>
-                      <button
-                        disabled={busyId === s.id}
-                        onClick={() => onRecover(s.id)}
-                        className="px-3 py-1 rounded bg-indigo-600 text-white disabled:opacity-50"
-                        title="Recover encrypted chunks from chain using your KEK and store file on server"
-                      >Recover</button>
+                      {s.status !== "approved" && (
+                        <button
+                          disabled={busyId === s.id}
+                          aria-busy={busyId === s.id && pendingAction === "approve"}
+                          onClick={() => onApprove(s.id)}
+                          className="px-3 py-1 rounded bg-green-600 text-white disabled:opacity-50"
+                        >{busyId === s.id && pendingAction === "approve" ? "Approving…" : "Approve"}</button>
+                      )}
+                      {s.status !== "rejected" && (
+                        <button
+                          disabled={busyId === s.id}
+                          aria-busy={busyId === s.id && pendingAction === "reject"}
+                          onClick={() => onReject(s.id)}
+                          className="px-3 py-1 rounded bg-red-600 text-white disabled:opacity-50"
+                        >{busyId === s.id && pendingAction === "reject" ? "Rejecting…" : "Reject"}</button>
+                      )}
+                      {!s.has_onchain_record && !s.has_onchain_file && (
+                        <button
+                          disabled={busyId === s.id}
+                          aria-busy={busyId === s.id && pendingAction === "record"}
+                          onClick={() => onRecordChain(s.id)}
+                          className="px-3 py-1 rounded bg-amber-600 text-white disabled:opacity-50"
+                          title="Record header on private chain (projectId, CID, checksum)"
+                        >{busyId === s.id && pendingAction === "record" ? "Recording…" : "Record on chain"}</button>
+                      )}
+                      {s.file && !s.has_onchain_file && (
+                        <button
+                          disabled={busyId === s.id}
+                          aria-busy={busyId === s.id && pendingAction === "anchor"}
+                          onClick={() => onAnchorFull(s.id)}
+                          className="px-3 py-1 rounded bg-blue-600 text-white disabled:opacity-50"
+                          title="Store the full file on private chain in raw chunks"
+                        >{busyId === s.id && pendingAction === "anchor" ? "Anchoring…" : "Anchor full file"}</button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -227,6 +262,14 @@ export default function VerifySubmissions() {
             </tbody>
           </table>
         </div>
+        {pendingAction === "anchor" && busyId !== null && (
+          <div className="mt-4">
+            <div className="h-2 w-full rounded bg-gray-200 dark:bg-white/10 overflow-hidden">
+              <div className="h-full w-1/3 bg-blue-600 animate-pulse" />
+            </div>
+            <p className="mt-2 text-xs text-gray-600 dark:text-gray-300">Anchoring file to private chain…</p>
+          </div>
+        )}
         {info && <p className="mt-3 text-sm text-green-600 dark:text-green-400">{info}</p>}
         {error && <p className="mt-4 text-sm text-error-500">{error}</p>}
       </div>

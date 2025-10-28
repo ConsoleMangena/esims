@@ -12,6 +12,7 @@ export default function SignUpForm() {
   const [isChecked, setIsChecked] = useState(false);
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
+  const [emailErr, setEmailErr] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showConfirm, setShowConfirm] = useState(false);
@@ -20,6 +21,8 @@ export default function SignUpForm() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { login } = useAuth();
+
+  const isStrong = (pw: string) => pw.length >= 12 && /[A-Z]/.test(pw) && /[a-z]/.test(pw) && /\d/.test(pw) && /[^A-Za-z0-9]/.test(pw);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,8 +34,16 @@ export default function SignUpForm() {
         setError("Username is required");
         return;
       }
-      if (password.length < 8) {
-        setError("Password must be at least 8 characters");
+      if (!email.trim()) {
+        setError("Email is required");
+        return;
+      }
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) {
+        setError("Enter a valid email address");
+        return;
+      }
+      if (!isStrong(password)) {
+        setError("Password must be at least 12 chars with uppercase, lowercase, a digit, and a special character");
         return;
       }
       if (password !== confirmPassword) {
@@ -117,15 +128,17 @@ export default function SignUpForm() {
                 {/* <!-- Email --> */}
                 <div>
                   <Label>
-                    Email
+                    Email<span className="text-error-500">*</span>
                   </Label>
                   <Input
                     type="email"
                     id="email"
                     name="email"
-                    placeholder="Enter your email (optional)"
+                    placeholder="Enter your email"
                     value={email}
-                    onChange={(e:any)=>setEmail(e.target.value)}
+                    onChange={(e:any)=>{setEmail(e.target.value); setEmailErr(null);}}
+                    error={!!emailErr}
+                    hint={emailErr || undefined}
                   />
                 </div>
                 {/* <!-- Password --> */}
@@ -149,6 +162,13 @@ export default function SignUpForm() {
                       )}
                     </span>
                   </div>
+                  <ul className="mt-2 text-xs text-gray-500 space-y-1">
+                    <li className={password.length >= 12 ? "text-success-500" : ""}>• At least 12 characters</li>
+                    <li className={/[A-Z]/.test(password) ? "text-success-500" : ""}>• At least one uppercase letter</li>
+                    <li className={/[a-z]/.test(password) ? "text-success-500" : ""}>• At least one lowercase letter</li>
+                    <li className={/\d/.test(password) ? "text-success-500" : ""}>• At least one digit</li>
+                    <li className={/[^A-Za-z0-9]/.test(password) ? "text-success-500" : ""}>• At least one special character</li>
+                  </ul>
                 </div>
                 {/* <!-- Confirm Password --> */}
                 <div>
@@ -190,9 +210,9 @@ export default function SignUpForm() {
                   )}
                   <button
                     type="submit"
-                    disabled={loading || !username.trim() || password.length < 8 || password !== confirmPassword || !isChecked}
+                    disabled={loading || !username.trim() || !email.trim() || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim()) || !isStrong(password) || password !== confirmPassword || !isChecked}
                     className={`flex items-center justify-center w-full px-4 py-2.5 text-sm font-medium text-white rounded-lg ${
-                      loading || !username.trim() || password.length < 8 || password !== confirmPassword || !isChecked
+                      loading || !username.trim() || !email.trim() || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim()) || !isStrong(password) || password !== confirmPassword || !isChecked
                         ? "bg-brand-400 cursor-not-allowed opacity-60"
                         : "bg-brand-500 hover:bg-brand-600"
                     }`}
